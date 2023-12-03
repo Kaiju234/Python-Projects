@@ -1,2 +1,3 @@
 # Python-Projects
-Just Storing some of my projects
+Most of my projects are done on Mobile
+
