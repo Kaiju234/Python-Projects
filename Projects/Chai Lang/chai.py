@@ -9,6 +9,9 @@ from strings_with_arrows import *
 #######################################
 
 DIGITS = '0123456789'
+LETTERS = string.ascii_letters
+LETTERS_DIGITS = LETTERS + DIGITS
+
 
 #######################################
 # ERRORS
@@ -89,14 +92,22 @@ class Position:
 
 int			= 'INT'
 float    = 'FLOAT'
+identifier = 'IDENTIFIER'
+keyword = 'KEYWORD'
 plus    = 'PLUS'
 minus    = 'MINUS'
 multiplication      = 'MUL'
 division      = 'DIV'
 pow			= 'POW'
+eq          = 'EQ'
 left_parentheses   = 'LPAREN'
 right_parentheses   = 'RPAREN'
 TT_EOF			= 'EOF'
+
+keywords = [
+	'var'
+]
+
 
 class Token:
 	def __init__(self, type_, value=None, pos_start=None, pos_end=None):
@@ -139,6 +150,8 @@ class Lexer:
 				self.advance()
 			elif self.current_char in DIGITS:
 				tokens.append(self.make_number())
+			elif self.current_char in LETTERS:
+				tokens.append(self.make_identifer)
 			elif self.current_char == '+':
 				tokens.append(Token(plus, pos_start=self.pos))
 				self.advance()
@@ -153,6 +166,9 @@ class Lexer:
 				self.advance()
 			elif self.current_char == '^':
 				tokens.append(Token(pow, pos_start=self.pos))
+				self.advance()
+			elif self.current_char == '=':
+				tokens.append(Token(eq, pos_start=self.pos))
 				self.advance()
 			elif self.current_char == '(':
 				tokens.append(Token(left_parentheses, pos_start=self.pos))
@@ -187,6 +203,17 @@ class Lexer:
 			return Token(int, int(num_str), pos_start, self.pos)
 		else:
 			return Token(float, float(num_str), pos_start, self.pos)
+	
+	def make_identifer(self):
+		id_str = ''
+		pos_start = self.pos.copy()
+
+		while self.current_char != None and self.current_char in LETTERS_DIGITS + '_':
+			id_str += self.current_char
+			self.advance()
+		tok_type = keyword if id_str in keywords else identifier
+		return Token(tok_type, id_str, pos_start, self.pos)
+
 
 #######################################
 # NODES
@@ -201,6 +228,24 @@ class NumberNode:
 
 	def __repr__(self):
 		return f'{self.tok}'
+
+
+class VarAccessNode:
+	def __init__(self, var_name_tok):
+		self.var_name_tok = var_name_tok
+
+
+		self.pos_start = self.var_name_tok.pos_start
+		self.pos_end = self.var_name_tok.pos_end
+
+class VarAccessNode:
+	def __init__(self, var_name_tok, value_node):
+		self.var_name_tok = var_name_tok
+		self.value_node = value_node
+
+		self.pos_start = self.var_name_tok.pos_start
+		self.pos_end = self.value_node.pos_end
+
 
 class BinOpNode:
 	def __init__(self, left_node, op_tok, right_node):
@@ -252,7 +297,6 @@ class ParseResult:
 #######################################
 # PARSER
 #######################################
-
 class Parser:
 	def __init__(self, tokens):
 		self.tokens = tokens
@@ -283,6 +327,10 @@ class Parser:
 		if tok.type in (int, float):
 			res.register(self.advance())
 			return res.success(NumberNode(tok))
+		
+		elif tok.type == identifier:
+			res.register(self.advance())
+			return res.success(VarAccessNode(tok))
 
 		elif tok.type == left_parentheses:
 			res.register(self.advance())
@@ -321,7 +369,7 @@ class Parser:
 		return self.bin_op(self.factor, (multiplication, division))
 
 	def expr(self):
-		return self.bin_op(self.term, (plus, minus))
+		return self.bin_op(self.term, (plus,minus))
 
 	###################################
 
@@ -421,6 +469,33 @@ class Context:
 		self.display_name = display_name
 		self.parent = parent
 		self.parent_entry_pos = parent_entry_pos
+		self.symbol_table = None
+
+############################ 
+# SYMBOL TABLE
+#############################
+
+class SymbolTable:
+	def __init__(self):
+		self.symbols = {}
+		self.parent = None
+	
+	def get(self, name):
+		value = self.symbols.get(name, None)
+		if value == None and self.parent:
+			return self.parent.get(name)
+		return value
+	
+	def set(self, name, value):
+			self.symbols[name] = value
+	
+	
+	def remove(self, name):
+			del self.symbols[name]
+
+          
+
+
 
 #######################################
 # INTERPRETER
@@ -441,6 +516,33 @@ class Interpreter:
 		return RTResult().success(
 			Number(node.tok.value).set_context(context).set_pos(node.pos_start, node.pos_end)
 		)
+	
+	def visit_VarAccessNode(self, node, context):
+		res = RTResult()
+		var_name = node.var_name_tok.value
+		value = context.symbol_table.get(var_name)
+
+		if not value:
+			return res.failure(RTError(
+				node.pos_start, node.pos_end,
+				f"'{var_name}' is not defined",
+				context
+			))
+
+		value = value.copy().set_pos(node.pos_start, node.pos_end)
+		return res.success(value)
+	
+
+	def visit_VarAssignNode(self, node, context):
+		res = RTResult()
+		var_name = node.var_name_tok.value
+		value = res.register(self.visit(node.value_node, context))
+		if res.error: return res
+
+		context.symbol_table.set(var_name, value)
+		return res.success(value)
+	
+
 
 	def visit_BinOpNode(self, node, context):
 		res = RTResult()
@@ -484,6 +586,10 @@ class Interpreter:
 # RUN
 #######################################
 
+global_symbol_table = SymbolTable()
+global_symbol_table.set("null", Number(0))
+
+
 def run(fn, text):
 	# Generate tokens
 	lexer = Lexer(fn, text)
@@ -498,6 +604,7 @@ def run(fn, text):
 	# Run program
 	interpreter = Interpreter()
 	context = Context('<program>')
+	context.symbol_table = global_symbol_table
 	result = interpreter.visit(ast.node, context)
 
 	return result.value, result.error
